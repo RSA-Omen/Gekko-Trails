@@ -40,6 +40,49 @@ async def sync_accounts_from_transactions() -> dict:
     return {"created": created}
 
 
+@router.post("/link-transactions", response_model=dict)
+async def link_transactions_to_accounts() -> dict:
+    """
+    Link existing transactions to accounts by matching bank_account numbers.
+    
+    Matches transactions to accounts by:
+    1. Exact match on bank_account_number
+    2. Last 4 digits match (if account number is 4+ digits)
+    """
+    linked = 0
+    with get_session() as session:
+        # Build account map
+        account_map: dict[str, int | None] = {}
+        all_accounts = list(session.execute(select(Account)).scalars())
+        for acc in all_accounts:
+            # Store exact match
+            account_map[acc.bank_account_number] = acc.id
+            # Also store last 4 digits if account number is longer
+            if len(acc.bank_account_number) >= 4:
+                last4 = acc.bank_account_number[-4:]
+                if last4 not in account_map:
+                    account_map[last4] = acc.id
+
+        # Update transactions without account_id
+        transactions = session.execute(
+            select(Transaction).where(Transaction.account_id.is_(None))
+        ).scalars().all()
+
+        for tx in transactions:
+            bank_acc = tx.bank_account
+            # Try exact match first
+            account_id = account_map.get(bank_acc)
+            # If no exact match, try last 4 digits
+            if account_id is None and len(bank_acc) >= 4:
+                account_id = account_map.get(bank_acc[-4:])
+            
+            if account_id:
+                tx.account_id = account_id
+                linked += 1
+
+    return {"linked": linked, "message": f"Linked {linked} transactions to accounts"}
+
+
 @router.get("", response_model=List[AccountOut])
 async def list_accounts() -> List[AccountOut]:
     """

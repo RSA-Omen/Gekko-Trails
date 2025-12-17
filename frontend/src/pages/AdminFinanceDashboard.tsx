@@ -634,14 +634,36 @@ export function AdminFinanceDashboard() {
             automatically when you assign a name that does not yet exist.
           </p>
 
-          <button
-            type="button"
-            disabled={isLoadingAccounts}
-            onClick={() => void loadAccounts()}
-            style={{ marginBottom: "0.75rem", paddingInline: "0.8rem" }}
-          >
-            {isLoadingAccounts ? "Refreshing..." : "Refresh cards"}
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={isLoadingAccounts}
+              onClick={() => void loadAccounts()}
+              style={{ paddingInline: "0.8rem" }}
+            >
+              {isLoadingAccounts ? "Refreshing..." : "Refresh cards"}
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const response = await fetch("/api/accounts/link-transactions", { method: "POST" });
+                  if (!response.ok) {
+                    const body = await response.json().catch(() => null);
+                    throw new Error(body?.detail ?? "Failed to link transactions");
+                  }
+                  const data = await response.json();
+                  alert(`Success: ${data.message || `Linked ${data.linked || 0} transactions to accounts`}`);
+                } catch (e) {
+                  const err = e as Error;
+                  setError(err.message || "Failed to link transactions to accounts");
+                }
+              }}
+              style={{ paddingInline: "0.8rem", background: "#10b981", color: "#fff" }}
+            >
+              Link Transactions to Accounts
+            </button>
+          </div>
 
           <div style={{ maxHeight: "320px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
@@ -719,6 +741,25 @@ export function AdminFinanceDashboard() {
             for historical transaction data.
           </p>
 
+          {/* Helper box for testing role views */}
+          <div style={{ marginBottom: "0.75rem", padding: "0.75rem", background: "rgba(99, 102, 241, 0.15)", borderRadius: "0.5rem", border: "1px solid rgba(99, 102, 241, 0.3)" }}>
+            <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.5rem", color: "#a5b4fc" }}>
+              💡 Testing Role Views
+            </div>
+            <div style={{ fontSize: "0.8rem", opacity: 0.9 }}>
+              To test Cardholder or Manager views: Select a role in the header dropdown, then enter a Cardholder ID below.
+              <div style={{ marginTop: "0.5rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <span>
+                  <strong>Cardholder IDs:</strong> {cardholders.slice(0, 10).map(ch => ch.id).join(", ")}
+                  {cardholders.length > 10 && ` (+${cardholders.length - 10} more)`}
+                </span>
+                <span>
+                  <strong>Manager IDs:</strong> {Array.from(new Set(cardholders.filter(ch => ch.manager).map(ch => ch.manager!.id))).slice(0, 5).join(", ")}
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
             <button
               type="button"
@@ -786,6 +827,7 @@ export function AdminFinanceDashboard() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
               <thead style={{ background: "rgba(15,23,42,0.9)", position: "sticky", top: 0 }}>
                 <tr>
+                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem", fontWeight: "bold" }}>ID</th>
                   <th
                     style={{ textAlign: "left", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
                     onClick={() => {
@@ -827,7 +869,7 @@ export function AdminFinanceDashboard() {
               <tbody>
                 {getFilteredAndSortedCardholders().length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
+                    <td colSpan={7} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
                       {cardholders.length === 0
                         ? "No cardholders yet. Click 'Create Cardholder' to add one."
                         : "No cardholders match the current filters."}
@@ -836,6 +878,7 @@ export function AdminFinanceDashboard() {
                 ) : (
                   getFilteredAndSortedCardholders().map((ch) => (
                     <tr key={ch.id}>
+                      <td style={{ padding: "0.4rem 0.6rem", fontWeight: "bold", color: "#a5b4fc" }}>{ch.id}</td>
                       <td style={{ padding: "0.4rem 0.6rem" }}>{ch.name}</td>
                       <td style={{ padding: "0.4rem 0.6rem" }}>{ch.surname}</td>
                       <td style={{ padding: "0.4rem 0.6rem" }}>{ch.email}</td>
@@ -850,6 +893,11 @@ export function AdminFinanceDashboard() {
                         {ch.manager ? (
                           <span style={{ color: "#86efac" }}>
                             {ch.manager.email || `Manager ID: ${ch.manager.id}`}
+                            {ch.manager.id && (
+                              <span style={{ fontSize: "0.75rem", opacity: 0.8, marginLeft: "0.25rem" }}>
+                                (ID: {ch.manager.id})
+                              </span>
+                            )}
                           </span>
                         ) : (
                           <span style={{ opacity: 0.7 }}>No manager</span>

@@ -28,8 +28,6 @@ def create_app() -> FastAPI:
     app.include_router(admincenter.router, prefix="/api/admincenter", tags=["admincenter"])
     app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
     app.include_router(cardholders.router, prefix="/api/cardholders", tags=["cardholders"])
-    app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
-    app.include_router(cardholders.router, prefix="/api/cardholders", tags=["cardholders"])
 
     # Internal ML API
     app.include_router(ml.router, prefix="/internal/ml", tags=["ml"])

@@ -9,7 +9,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import get_session
-from app.models import ImportJob, Transaction
+from app.models import ImportJob, Transaction, Account
+from sqlalchemy import select
 
 
 router = APIRouter()
@@ -141,6 +142,29 @@ async def create_import_format1(file: UploadFile = File(...)) -> dict:
         session.add(job)
         session.flush()  # get job.id
         job_id = job.id
+
+        # Build a map of bank_account -> account_id for linking transactions to accounts
+        # Match by exact match or by last 4 digits
+        account_map: Dict[str, int | None] = {}
+        all_accounts = list(session.execute(select(Account)).scalars())
+        for acc in all_accounts:
+            # Store exact match
+            account_map[acc.bank_account_number] = acc.id
+            # Also store last 4 digits if account number is longer
+            if len(acc.bank_account_number) >= 4:
+                last4 = acc.bank_account_number[-4:]
+                if last4 not in account_map:
+                    account_map[last4] = acc.id
+
+        # Link transactions to accounts
+        for row in prepared:
+            bank_acc = row["bank_account"]
+            # Try exact match first
+            account_id = account_map.get(bank_acc)
+            # If no exact match, try last 4 digits
+            if account_id is None and len(bank_acc) >= 4:
+                account_id = account_map.get(bank_acc[-4:])
+            row["account_id"] = account_id
 
         # Prepare insert statement with ON CONFLICT DO NOTHING on composite_key.
         stmt = (
