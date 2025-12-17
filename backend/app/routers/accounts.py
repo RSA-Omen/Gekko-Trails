@@ -104,7 +104,7 @@ async def list_accounts() -> List[AccountOut]:
                     id=acc.id,
                     bank_account_number=acc.bank_account_number,
                     label=acc.label,
-                    cardholder=CardholderOut(**cardholder_data) if cardholder_data else None,
+                    cardholder=cardholder_data,
                 )
             )
     return items
@@ -117,57 +117,88 @@ async def assign_cardholder(
 ) -> AccountOut:
     """
     Assign (or create) a Cardholder for a given Account by display name.
+    Supports both display_name (legacy) and cardholder_id (new).
     """
-    name = payload.display_name.strip()
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="display_name must not be empty.",
-        )
-
     with get_session() as session:
         account = session.get(Account, account_id)
         if not account:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
 
-        # Try to find an existing cardholder by case-insensitive match on display_name.
-        # For backwards compatibility, parse "Name Surname" or just use as name if no space
-        parts = name.split(maxsplit=1)
-        if len(parts) == 2:
-            cardholder_name, cardholder_surname = parts
+        # If cardholder_id is provided, use it directly
+        if payload.cardholder_id:
+            cardholder = session.get(Cardholder, payload.cardholder_id)
+            if not cardholder:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Cardholder with id {payload.cardholder_id} not found.",
+                )
         else:
-            cardholder_name = name
-            cardholder_surname = ""
-        
-        # Try to find by matching display_name (computed property)
-        existing = None
-        for ch in session.execute(select(Cardholder)).scalars():
-            if ch.get_display_name().lower() == name.lower():
-                existing = ch
-                break
+            # Legacy: create or find by display_name
+            name = (payload.display_name or "").strip()
+            if not name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Either display_name or cardholder_id must be provided.",
+                )
 
-        if existing:
-            cardholder = existing
-        else:
-            # Create new cardholder with parsed name/surname and placeholder email
-            # Email will need to be updated via cardholder management UI
-            cardholder = Cardholder(
-                name=cardholder_name,
-                surname=cardholder_surname,
-                email=f"{cardholder_name.lower()}.{cardholder_surname.lower()}@gekko.local" if cardholder_surname else f"{cardholder_name.lower()}@gekko.local"
-            )
-            session.add(cardholder)
-            session.flush()
+            # Try to find an existing cardholder by case-insensitive match on display_name.
+            parts = name.split(maxsplit=1)
+            if len(parts) == 2:
+                cardholder_name, cardholder_surname = parts
+            else:
+                cardholder_name = name
+                cardholder_surname = ""
+            
+            # Try to find by matching display_name (computed property)
+            existing = None
+            for ch in session.execute(select(Cardholder)).scalars():
+                if ch.get_display_name().lower() == name.lower():
+                    existing = ch
+                    break
+
+            if existing:
+                cardholder = existing
+            else:
+                # Create new cardholder with parsed name/surname and placeholder email
+                cardholder = Cardholder(
+                    name=cardholder_name,
+                    surname=cardholder_surname,
+                    email=f"{cardholder_name.lower()}.{cardholder_surname.lower()}@gekko.local" if cardholder_surname else f"{cardholder_name.lower()}@gekko.local"
+                )
+                session.add(cardholder)
+                session.flush()
 
         account.cardholder_id = cardholder.id
         session.flush()
 
         # Extract data while session is open.
+        # For accounts, we return a lightweight summary for the cardholder
         return AccountOut(
             id=account.id,
             bank_account_number=account.bank_account_number,
             label=account.label,
-            cardholder=CardholderOut(id=cardholder.id, display_name=cardholder.get_display_name()),
+            cardholder={"id": cardholder.id, "display_name": cardholder.get_display_name()},
+        )
+
+
+@router.post("/{account_id}/unassign-cardholder", response_model=AccountOut)
+async def unassign_cardholder(account_id: int) -> AccountOut:
+    """
+    Remove the cardholder assignment from an account.
+    """
+    with get_session() as session:
+        account = session.get(Account, account_id)
+        if not account:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+
+        account.cardholder_id = None
+        session.flush()
+
+        return AccountOut(
+            id=account.id,
+            bank_account_number=account.bank_account_number,
+            label=account.label,
+            cardholder=None,
         )
 
 

@@ -6,6 +6,7 @@ type ImportResult = {
   total_rows: number;
   inserted: number;
   skipped: number;
+  accounts_created?: number;
 } | null;
 
 type TransactionRow = {
@@ -40,6 +41,8 @@ export function AdminFinanceDashboard() {
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
   const [assigningAccountId, setAssigningAccountId] = useState<number | null>(null);
   const [assignNames, setAssignNames] = useState<Record<number, string>>({});
+  const [selectedCardholderIds, setSelectedCardholderIds] = useState<Record<number, number | "">>({});
+  const [showUnlinkedOnly, setShowUnlinkedOnly] = useState(false);
   
   // Cardholder management state
   type CardholderRow = {
@@ -140,6 +143,19 @@ export function AdminFinanceDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (activeTab === "cards") {
+      void loadAccounts();
+      // Load cardholders for the dropdown if not already loaded
+      if (cardholders.length === 0) {
+        void loadCardholders();
+      }
+    } else if (activeTab === "cardholders") {
+      void loadCardholders();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   async function loadAccounts() {
     setIsLoadingAccounts(true);
     setError(null);
@@ -162,18 +178,56 @@ export function AdminFinanceDashboard() {
   }
 
   async function handleAssignCardholder(accountId: number) {
+    const cardholderId = selectedCardholderIds[accountId];
     const name = (assignNames[accountId] ?? "").trim();
-    if (!name) {
-      setError("Please enter a cardholder name before assigning.");
+    
+    if (!cardholderId && !name) {
+      setError("Please select a cardholder or enter a name before assigning.");
+      return;
+    }
+    
+    setAssigningAccountId(accountId);
+    setError(null);
+    try {
+      const payload: { cardholder_id?: number; display_name?: string } = {};
+      if (cardholderId && cardholderId !== "") {
+        payload.cardholder_id = cardholderId as number;
+      } else if (name) {
+        payload.display_name = name;
+      }
+      
+      const response = await fetch(`/api/accounts/${accountId}/assign-cardholder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      const updated = (await response.json()) as AccountRow;
+      setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      // Clear the selection
+      setSelectedCardholderIds((prev) => ({ ...prev, [accountId]: "" }));
+      setAssignNames((prev) => ({ ...prev, [accountId]: "" }));
+    } catch (e) {
+      const err = e as Error;
+      setError(err.message || "Failed to assign cardholder.");
+    } finally {
+      setAssigningAccountId(null);
+    }
+  }
+
+  async function handleUnassignCardholder(accountId: number) {
+    if (!confirm("Are you sure you want to unassign this cardholder from the account?")) {
       return;
     }
     setAssigningAccountId(accountId);
     setError(null);
     try {
-      const response = await fetch(`/api/accounts/${accountId}/assign-cardholder`, {
+      const response = await fetch(`/api/accounts/${accountId}/unassign-cardholder`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ display_name: name }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
@@ -184,7 +238,7 @@ export function AdminFinanceDashboard() {
       setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
     } catch (e) {
       const err = e as Error;
-      setError(err.message || "Failed to assign cardholder.");
+      setError(err.message || "Failed to unassign cardholder.");
     } finally {
       setAssigningAccountId(null);
     }
@@ -518,20 +572,60 @@ export function AdminFinanceDashboard() {
             composite keys so re-imports are safe.
           </p>
 
-          <form onSubmit={handleSubmit} style={{ marginBottom: "1rem" }}>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] ?? null);
-                setResult(null);
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", alignItems: "center", flexWrap: "wrap" }}>
+            <form onSubmit={handleSubmit} style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <input
+                type="file"
+                accept=".csv"
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setResult(null);
+                  setError(null);
+                }}
+              />
+              <button type="submit" disabled={isUploading || !file}>
+                {isUploading ? "Uploading..." : "Upload CSV"}
+              </button>
+            </form>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!confirm("Are you sure you want to clear the entire ledger? This will delete all transactions and import jobs. This action cannot be undone.")) {
+                  return;
+                }
                 setError(null);
+                try {
+                  const response = await fetch("/api/imports/clear-ledger", { method: "DELETE" });
+                  if (!response.ok) {
+                    const body = await response.json().catch(() => null);
+                    throw new Error(body?.detail ?? "Failed to clear ledger");
+                  }
+                  const data = await response.json();
+                  alert(`Ledger cleared: ${data.transactions_deleted} transactions and ${data.import_jobs_deleted} import jobs deleted.`);
+                  // Clear the ledger view
+                  setLedger([]);
+                  setResult(null);
+                  // Reload accounts to refresh the view
+                  if (activeTab === "cards") {
+                    void loadAccounts();
+                  }
+                } catch (e) {
+                  const err = e as Error;
+                  setError(err.message || "Failed to clear ledger");
+                }
               }}
-            />
-            <button type="submit" disabled={isUploading || !file} style={{ marginLeft: "0.5rem" }}>
-              {isUploading ? "Uploading..." : "Upload CSV"}
+              style={{
+                padding: "0.5rem 1rem",
+                background: "rgba(239, 68, 68, 0.2)",
+                border: "1px solid rgba(239, 68, 68, 0.5)",
+                color: "#fecaca",
+                borderRadius: "0.25rem",
+                cursor: "pointer",
+              }}
+            >
+              Clear Ledger
             </button>
-          </form>
+          </div>
 
           {error && activeTab === "ledger" && (
             <p style={{ color: "#fecaca", marginTop: 0 }}>
@@ -539,17 +633,20 @@ export function AdminFinanceDashboard() {
             </p>
           )}
 
-          {result && (
-            <div>
-              <p>{result.message}</p>
-              <ul>
-                <li>Import job ID: {result.import_job_id ?? "n/a"}</li>
-                <li>Total parsed rows: {result.total_rows}</li>
-                <li>Inserted into ledger: {result.inserted}</li>
-                <li>Skipped (already existed): {result.skipped}</li>
-              </ul>
-            </div>
-          )}
+                  {result && (
+                    <div>
+                      <p>{result.message}</p>
+                      <ul>
+                        <li>Import job ID: {result.import_job_id ?? "n/a"}</li>
+                        <li>Total parsed rows: {result.total_rows}</li>
+                        <li>Inserted into ledger: {result.inserted}</li>
+                        <li>Skipped (already existed): {result.skipped}</li>
+                        {result.accounts_created !== undefined && (
+                          <li>New accounts created: {result.accounts_created}</li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
 
           <hr style={{ margin: "1.5rem 0", borderColor: "rgba(148,163,184,0.3)" }} />
 
@@ -630,11 +727,11 @@ export function AdminFinanceDashboard() {
           )}
 
           <p>
-            Manage cards (bank accounts) and assign them to cardholders. New cardholders will be created
-            automatically when you assign a name that does not yet exist.
+            Manage cards (bank accounts) and assign them to cardholders. Select a cardholder from the dropdown
+            or enter a name to create a new cardholder.
           </p>
 
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
               disabled={isLoadingAccounts}
@@ -663,6 +760,14 @@ export function AdminFinanceDashboard() {
             >
               Link Transactions to Accounts
             </button>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showUnlinkedOnly}
+                onChange={(e) => setShowUnlinkedOnly(e.target.checked)}
+              />
+              Show unlinked only
+            </label>
           </div>
 
           <div style={{ maxHeight: "320px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
@@ -684,42 +789,111 @@ export function AdminFinanceDashboard() {
                     </td>
                   </tr>
                 ) : (
-                  accounts.map((acc) => {
-                    // Extract last 4 digits for display
-                    const last4 = acc.bank_account_number.length >= 4 
-                      ? acc.bank_account_number.slice(-4) 
-                      : acc.bank_account_number.padStart(4, '0');
-                    return (
-                    <tr key={acc.id}>
-                      <td style={{ padding: "0.4rem 0.6rem" }}>{last4}</td>
-                      <td style={{ padding: "0.4rem 0.6rem" }}>{acc.label ?? ""}</td>
-                      <td style={{ padding: "0.4rem 0.6rem" }}>
-                        {acc.cardholder ? acc.cardholder.display_name : <span style={{ opacity: 0.7 }}>Unassigned</span>}
-                      </td>
-                      <td style={{ padding: "0.4rem 0.6rem" }}>
-                        <input
-                          type="text"
-                          placeholder="Cardholder name"
-                          value={assignNames[acc.id] ?? ""}
-                          onChange={(e) =>
-                            setAssignNames((prev) => ({
-                              ...prev,
-                              [acc.id]: e.target.value,
-                            }))
-                          }
-                          style={{ marginRight: "0.4rem" }}
-                        />
-                        <button
-                          type="button"
-                          disabled={assigningAccountId === acc.id}
-                          onClick={() => void handleAssignCardholder(acc.id)}
-                        >
-                          {assigningAccountId === acc.id ? "Saving..." : "Assign"}
-                        </button>
-                      </td>
-                    </tr>
-                    );
-                  })
+                  accounts
+                    .filter((acc) => !showUnlinkedOnly || !acc.cardholder)
+                    .map((acc) => {
+                      // Extract last 4 digits for display
+                      const last4 = acc.bank_account_number.length >= 4 
+                        ? acc.bank_account_number.slice(-4) 
+                        : acc.bank_account_number.padStart(4, '0');
+                      return (
+                      <tr key={acc.id}>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{last4}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{acc.label ?? ""}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>
+                          {acc.cardholder ? (
+                            <span>
+                              {acc.cardholder.display_name}
+                              <span style={{ fontSize: "0.75rem", opacity: 0.7, marginLeft: "0.5rem" }}>
+                                (ID: {acc.cardholder.id})
+                              </span>
+                            </span>
+                          ) : (
+                            <span style={{ opacity: 0.7 }}>Unassigned</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>
+                          <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", flexWrap: "wrap" }}>
+                            <select
+                              value={selectedCardholderIds[acc.id] ?? ""}
+                              onChange={(e) => {
+                                const value = e.target.value === "" ? "" : parseInt(e.target.value, 10);
+                                setSelectedCardholderIds((prev) => ({
+                                  ...prev,
+                                  [acc.id]: value,
+                                }));
+                                // Clear text input when selecting from dropdown
+                                if (value !== "") {
+                                  setAssignNames((prev) => ({ ...prev, [acc.id]: "" }));
+                                }
+                              }}
+                              style={{
+                                padding: "0.3rem 0.5rem",
+                                background: "rgba(15, 23, 42, 0.9)",
+                                border: "1px solid rgba(148, 163, 184, 0.3)",
+                                borderRadius: "0.25rem",
+                                color: "#e5e7eb",
+                                fontSize: "0.8rem",
+                                minWidth: "150px",
+                              }}
+                            >
+                              <option value="">-- Select Cardholder --</option>
+                              {cardholders.map((ch) => (
+                                <option key={ch.id} value={ch.id}>
+                                  {ch.display_name} (ID: {ch.id})
+                                </option>
+                              ))}
+                            </select>
+                            <span style={{ opacity: 0.6 }}>or</span>
+                            <input
+                              type="text"
+                              placeholder="New cardholder name"
+                              value={assignNames[acc.id] ?? ""}
+                              onChange={(e) => {
+                                setAssignNames((prev) => ({
+                                  ...prev,
+                                  [acc.id]: e.target.value,
+                                }));
+                                // Clear dropdown when typing
+                                if (e.target.value) {
+                                  setSelectedCardholderIds((prev) => ({ ...prev, [acc.id]: "" }));
+                                }
+                              }}
+                              style={{
+                                padding: "0.3rem 0.5rem",
+                                minWidth: "150px",
+                                fontSize: "0.8rem",
+                              }}
+                            />
+                            <button
+                              type="button"
+                              disabled={assigningAccountId === acc.id}
+                              onClick={() => void handleAssignCardholder(acc.id)}
+                              style={{ padding: "0.3rem 0.6rem", fontSize: "0.8rem" }}
+                            >
+                              {assigningAccountId === acc.id ? "Saving..." : "Assign"}
+                            </button>
+                            {acc.cardholder && (
+                              <button
+                                type="button"
+                                disabled={assigningAccountId === acc.id}
+                                onClick={() => void handleUnassignCardholder(acc.id)}
+                                style={{
+                                  padding: "0.3rem 0.6rem",
+                                  fontSize: "0.8rem",
+                                  background: "rgba(239, 68, 68, 0.2)",
+                                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                                  color: "#fecaca",
+                                }}
+                              >
+                                Unassign
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      );
+                    })
                 )}
               </tbody>
             </table>

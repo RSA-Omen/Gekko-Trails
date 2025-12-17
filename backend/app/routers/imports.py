@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.db import get_session
 from app.models import ImportJob, Transaction, Account
-from sqlalchemy import select
+from sqlalchemy import select, func, delete
 
 
 router = APIRouter()
@@ -131,6 +131,7 @@ async def create_import_format1(file: UploadFile = File(...)) -> dict:
 
     inserted_count = 0
     job_id: int | None = None
+    accounts_created = 0
     with get_session() as session:
         # Create ImportJob record.
         job = ImportJob(
@@ -143,10 +144,47 @@ async def create_import_format1(file: UploadFile = File(...)) -> dict:
         session.flush()  # get job.id
         job_id = job.id
 
+        # Get all unique bank_account values from prepared transactions
+        unique_bank_accounts = {row["bank_account"] for row in prepared}
+        
+        # Get existing accounts
+        existing_accounts = {
+            acc.bank_account_number: acc.id
+            for acc in session.execute(select(Account)).scalars()
+        }
+        
+        # Create missing accounts for any bank_account not in accounts table
+        for bank_acc in unique_bank_accounts:
+            if bank_acc not in existing_accounts:
+                # Check if account exists by last 4 digits (for accounts with full numbers)
+                found_account = None
+                if len(bank_acc) >= 4:
+                    last4 = bank_acc[-4:]
+                    for acc_num, acc_id in existing_accounts.items():
+                        if len(acc_num) >= 4 and acc_num[-4:] == last4:
+                            found_account = acc_id
+                            break
+                
+                if not found_account:
+                    # Create new account
+                    new_account = Account(
+                        bank_account_number=bank_acc,
+                        label=bank_acc,
+                    )
+                    session.add(new_account)
+                    session.flush()  # Get the ID
+                    existing_accounts[bank_acc] = new_account.id
+                    accounts_created += 1
+                else:
+                    # Use existing account found by last 4 digits
+                    existing_accounts[bank_acc] = found_account
+
+        # Refresh accounts list after creating new ones
+        all_accounts = list(session.execute(select(Account)).scalars())
+        
         # Build a map of bank_account -> account_id for linking transactions to accounts
         # Match by exact match or by last 4 digits
         account_map: Dict[str, int | None] = {}
-        all_accounts = list(session.execute(select(Account)).scalars())
         for acc in all_accounts:
             # Store exact match
             account_map[acc.bank_account_number] = acc.id
@@ -181,9 +219,17 @@ async def create_import_format1(file: UploadFile = File(...)) -> dict:
             .on_conflict_do_nothing(index_elements=["composite_key"])
         )
 
+        # Count transactions before insert
+        count_before = session.execute(select(func.count(Transaction.id))).scalar()
+        
+        # Execute the insert statement
         result = session.execute(stmt)
-        # result.rowcount may be None with some drivers; fall back to counting manually if needed.
-        inserted_count = result.rowcount or 0
+        session.flush()
+        
+        # Count transactions after insert to get actual inserted count
+        # This is more reliable than rowcount for SQLite with ON CONFLICT DO NOTHING
+        count_after = session.execute(select(func.count(Transaction.id))).scalar()
+        inserted_count = count_after - count_before
 
         job.status = "completed"
         job.error_count = job.total_rows - inserted_count
@@ -194,6 +240,42 @@ async def create_import_format1(file: UploadFile = File(...)) -> dict:
         "total_rows": len(prepared),
         "inserted": inserted_count,
         "skipped": len(prepared) - inserted_count,
+        "accounts_created": accounts_created,
+    }
+
+
+@router.delete("/clear-ledger", response_model=dict)
+async def clear_ledger() -> dict:
+    """
+    Clear all transactions from the ledger (for testing/reset purposes).
+    WARNING: This will delete all transaction data!
+    """
+    with get_session() as session:
+        # Count before deletion
+        count_before = session.execute(select(func.count(Transaction.id))).scalar()
+        import_jobs_count = session.execute(select(func.count(ImportJob.id))).scalar()
+        
+        # Delete all transactions
+        session.execute(delete(Transaction))
+        
+        # Also clear import jobs for clean state
+        session.execute(delete(ImportJob))
+        
+        # Explicitly commit the deletions
+        session.commit()
+        
+        # Verify deletion
+        count_after = session.execute(select(func.count(Transaction.id))).scalar()
+        if count_after > 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to clear all transactions. {count_after} remain.",
+            )
+    
+    return {
+        "message": "Ledger cleared successfully",
+        "transactions_deleted": count_before,
+        "import_jobs_deleted": import_jobs_count,
     }
 
 

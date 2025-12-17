@@ -63,13 +63,16 @@ class AccountOut(BaseModel):
     id: int
     bank_account_number: str
     label: Optional[str] = None
-    cardholder: Optional[CardholderOut] = None
+    # Lightweight summary: e.g. {"id": 13, "display_name": "Hughes"}
+    cardholder: Optional[dict] = None
 
     class Config:
         from_attributes = True
 
 
 class AssignCardholderRequest(BaseModel):
-    display_name: str
+    display_name: Optional[str] = None  # Legacy: create/find by name
+    cardholder_id: Optional[int] = None  # New: assign by ID
+
 
 
