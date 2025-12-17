@@ -7,10 +7,23 @@ from sqlalchemy import select
 
 from app.db import get_session
 from app.models import Cardholder, Manager, CardholderManager
-from app.schemas import CardholderOut, CardholderCreate, CardholderUpdate
+from app.schemas import CardholderOut, CardholderCreate, CardholderUpdate, ManagerOut
 
 
 router = APIRouter()
+
+# Manager email mapping (from import data)
+# This will be replaced with proper User/Manager linking when SSO is implemented
+MANAGER_EMAIL_MAP = {
+    1: "andrewe@gekkos.com",
+    2: "melindap@gekkos.com",
+    3: "nigelg@gekkos.com",
+    4: "markd@gekkos.com",
+    5: "dano@gekkos.com",
+    6: "timb@gekkos.com",
+    7: "michaelt@gekkos.com",
+    8: "waynel@gekkos.com",
+}
 
 
 @router.get("", response_model=List[CardholderOut])
@@ -26,7 +39,13 @@ async def list_cardholders() -> List[CardholderOut]:
             manager_link = session.execute(
                 select(CardholderManager).where(CardholderManager.cardholder_id == ch.id).limit(1)
             ).scalar_one_or_none()
-            manager_id = manager_link.manager_id if manager_link else None
+            
+            manager = None
+            if manager_link:
+                manager_obj = session.get(Manager, manager_link.manager_id)
+                if manager_obj:
+                    manager_email = MANAGER_EMAIL_MAP.get(manager_obj.id)
+                    manager = ManagerOut(id=manager_obj.id, user_id=manager_obj.user_id, email=manager_email)
             
             items.append(
                 CardholderOut(
@@ -36,6 +55,7 @@ async def list_cardholders() -> List[CardholderOut]:
                     email=ch.email,
                     user_id=ch.user_id,
                     display_name=ch.get_display_name(),
+                    manager=manager,
                 )
             )
     return items
@@ -92,8 +112,17 @@ async def create_cardholder(payload: CardholderCreate) -> CardholderOut:
             session.add(link)
             session.flush()
 
-        # get_session() context manager will commit automatically
-        # Extract data while session is still active
+        # Get manager if assigned
+        manager_link = session.execute(
+            select(CardholderManager).where(CardholderManager.cardholder_id == cardholder.id).limit(1)
+        ).scalar_one_or_none()
+        
+        manager = None
+        if manager_link:
+            manager_obj = session.get(Manager, manager_link.manager_id)
+            if manager_obj:
+                manager = ManagerOut(id=manager_obj.id, user_id=manager_obj.user_id)
+
         result = CardholderOut(
             id=cardholder.id,
             name=cardholder.name,
@@ -101,6 +130,7 @@ async def create_cardholder(payload: CardholderCreate) -> CardholderOut:
             email=cardholder.email,
             user_id=cardholder.user_id,
             display_name=cardholder.get_display_name(),
+            manager=manager,
         )
         return result
 
@@ -145,11 +175,6 @@ async def update_cardholder(
         # Update manager assignment
         if payload.manager_id is not None:
             # Remove existing manager links
-            session.execute(
-                select(CardholderManager).where(
-                    CardholderManager.cardholder_id == cardholder_id
-                )
-            ).scalars()
             existing_links = list(
                 session.execute(
                     select(CardholderManager).where(
@@ -173,6 +198,17 @@ async def update_cardholder(
 
         session.flush()
 
+        # Get manager if assigned
+        manager_link = session.execute(
+            select(CardholderManager).where(CardholderManager.cardholder_id == cardholder_id).limit(1)
+        ).scalar_one_or_none()
+        
+        manager = None
+        if manager_link:
+            manager_obj = session.get(Manager, manager_link.manager_id)
+            if manager_obj:
+                manager = ManagerOut(id=manager_obj.id, user_id=manager_obj.user_id)
+
         return CardholderOut(
             id=cardholder.id,
             name=cardholder.name,
@@ -180,6 +216,7 @@ async def update_cardholder(
             email=cardholder.email,
             user_id=cardholder.user_id,
             display_name=cardholder.get_display_name(),
+            manager=manager,
         )
 
 
@@ -195,6 +232,18 @@ async def get_cardholder(cardholder_id: int) -> CardholderOut:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cardholder not found.",
             )
+        
+        # Get manager if assigned
+        manager_link = session.execute(
+            select(CardholderManager).where(CardholderManager.cardholder_id == cardholder_id).limit(1)
+        ).scalar_one_or_none()
+        
+        manager = None
+        if manager_link:
+            manager_obj = session.get(Manager, manager_link.manager_id)
+            if manager_obj:
+                manager = ManagerOut(id=manager_obj.id, user_id=manager_obj.user_id)
+        
         return CardholderOut(
             id=cardholder.id,
             name=cardholder.name,
@@ -202,6 +251,7 @@ async def get_cardholder(cardholder_id: int) -> CardholderOut:
             email=cardholder.email,
             user_id=cardholder.user_id,
             display_name=cardholder.get_display_name(),
+            manager=manager,
         )
 
 
@@ -221,4 +271,3 @@ async def delete_cardholder(cardholder_id: int):
             )
         session.delete(cardholder)
         session.commit()
-

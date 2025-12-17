@@ -23,6 +23,15 @@ class TransactionOut(BaseModel):
         from_attributes = True
 
 
+class ManagerOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    email: Optional[str] = None  # Manager email (from mapping until SSO is implemented)
+
+    class Config:
+        from_attributes = True
+
+
 class CardholderOut(BaseModel):
     id: int
     name: str
@@ -30,6 +39,7 @@ class CardholderOut(BaseModel):
     email: str
     user_id: Optional[int] = None  # SSO link (nullable - becomes NULL if SSO revoked)
     display_name: str  # Computed: "name surname"
+    manager: Optional[ManagerOut] = None  # Manager assigned to this cardholder
 
     class Config:
         from_attributes = True

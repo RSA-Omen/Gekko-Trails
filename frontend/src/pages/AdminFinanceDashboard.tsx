@@ -49,6 +49,7 @@ export function AdminFinanceDashboard() {
     email: string;
     user_id: number | null;
     display_name: string;
+    manager: { id: number; user_id: number | null; email: string | null } | null;
   };
   const [cardholders, setCardholders] = useState<CardholderRow[]>([]);
   const [isLoadingCardholders, setIsLoadingCardholders] = useState(false);
@@ -845,8 +846,14 @@ export function AdminFinanceDashboard() {
                           <span style={{ opacity: 0.7 }}>No</span>
                         )}
                       </td>
-                      <td style={{ padding: "0.4rem 0.6rem", opacity: 0.7 }}>
-                        Not yet implemented
+                      <td style={{ padding: "0.4rem 0.6rem" }}>
+                        {ch.manager ? (
+                          <span style={{ color: "#86efac" }}>
+                            {ch.manager.email || `Manager ID: ${ch.manager.id}`}
+                          </span>
+                        ) : (
+                          <span style={{ opacity: 0.7 }}>No manager</span>
+                        )}
                       </td>
                       <td style={{ padding: "0.4rem 0.6rem" }}>
                         <div style={{ display: "flex", gap: "0.3rem" }}>

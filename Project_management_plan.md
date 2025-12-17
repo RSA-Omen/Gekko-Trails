@@ -16,7 +16,7 @@ Lifecycle status (orchestrator view):
 - [x] Planning  
 - [x] Project Management  
 - [x] Architecture  
-- [ ] Implementation  
+- [x] Implementation (In Progress - M2 partially complete)  
 
 ---
 
@@ -94,9 +94,23 @@ Lifecycle status (orchestrator view):
 
 ### 4. M2 – CSV Import & Ledger (Format 1)
 
-**Current status:**  
-- Initial CSV import pipeline for Format 1 is implemented (manual upload via Admin/Finance UI, backend `/api/imports/format1` with composite-key dedup, `ImportJob` tracking, and storage in the `transactions` table).  
-- Basic ledger view (Format 1) is implemented for Admin/Finance via `/api/transactions` and the Admin/Finance dashboard table.
+**Current status:** ✅ **COMPLETE**  
+- ✅ CSV import pipeline for Format 1 is fully implemented (manual upload via Admin/Finance UI, backend `/api/imports/format1` with composite-key dedup, `ImportJob` tracking, and storage in the `transactions` table).  
+- ✅ Ledger view (Format 1) is implemented for Admin/Finance via `/api/transactions` with filtering by bank account.
+- ✅ Cards & Accounts management: Backend endpoints and frontend UI to assign bank accounts to cardholders.
+- ✅ Cardholder management: Full CRUD with filters, sorting, popup dialogs for create/edit, delete functionality.
+- ✅ Database schema fully implemented with all entities (User, Role, Cardholder, Manager, Account, Transaction, Classification, etc.).
+- ✅ Project pushed to GitHub: https://github.com/RSA-Omen/Gekko-Trails.git
+
+**Completed tasks:**
+- Task 2.1.1: Import configuration (manual upload UI implemented)
+- Task 2.1.2: Validation & error handling (date parsing, numeric validation, error reporting)
+- Task 2.1.3: Import job lifecycle (ImportJob entity with tracking)
+- Task 2.2.1: Ledger schema design (Transaction model with composite keys)
+- Task 2.2.3: Initial UI for ledger (Admin/Finance dashboard with filtering)
+
+**Remaining for M2:**
+- Task 2.2.2: Role-specific ledger access rules (Cardholder and Manager views not yet implemented)
 
 #### Epic 2.1 – CSV import pipeline (Format 1)
 
