@@ -325,3 +325,36 @@ Lifecycle status (orchestrator view):
   - Define who signs off (Barry, Finance lead, etc.).
 
 ---
+
+### 9. Future – Manager & Profile Management (Post-M6)
+
+#### Epic 9.1 – Manager profile management
+
+**Task 9.1.1 – Manager CRUD**
+
+- Subtasks:
+  - Implement Admin/Finance UI to create, edit, and deactivate manager records.
+  - Persist manager metadata (name, email, department) instead of relying on static mappings.
+  - Ensure changes propagate to cardholder → manager links safely.
+
+**Task 9.1.2 – Manager search & filters**
+
+- Subtasks:
+  - Add filters by name/email/active status in the Managers tab.
+  - Show counts of assigned cardholders per manager.
+
+#### Epic 9.2 – User profile management
+
+**Task 9.2.1 – Basic user profiles**
+
+- Subtasks:
+  - Define profile fields for SSO-linked users (display name, email, roles).
+  - Add read-only profile view for current user (Cardholder/Manager/Admin).
+
+**Task 9.2.2 – Admin profile controls**
+
+- Subtasks:
+  - Allow Admin/Finance to see which profiles map to which roles (Cardholder/Manager/Finance/Admin).
+  - Prepare for Azure AD SSO mapping so profile data can be hydrated from SSO in M6.
+
+---

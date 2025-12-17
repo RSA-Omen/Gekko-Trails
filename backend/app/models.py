@@ -124,6 +124,7 @@ class ImportJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="import_job")
+    classification_batches: Mapped[list["ClassificationBatch"]] = relationship(back_populates="import_job")
 
 
 class Transaction(Base):
@@ -172,22 +173,50 @@ class Transaction(Base):
     )
 
 
+class ClassificationBatch(Base):
+    __tablename__ = "classification_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_type: Mapped[str] = mapped_column(String(50))  # finance, cardholder, manager
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ID of finance user, cardholder, or manager
+    parent_batch_id: Mapped[int | None] = mapped_column(ForeignKey("classification_batches.id", ondelete="SET NULL"), nullable=True)
+    import_job_id: Mapped[int | None] = mapped_column(ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="open")  # open, in_review, completed, approved, rejected
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)  # e.g. "Brown – Nov 2025"
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)  # Alternative display label
+    note: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # Finance or Manager comments
+    rejection_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # Required when status=rejected
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    parent_batch: Mapped["ClassificationBatch | None"] = relationship(
+        "ClassificationBatch", remote_side=[id], backref="child_batches"
+    )
+    import_job: Mapped["ImportJob | None"] = relationship(back_populates="classification_batches")
+    classifications: Mapped[list["Classification"]] = relationship(back_populates="batch")
+
+
 class Classification(Base):
     __tablename__ = "classifications"
 
     transaction_id: Mapped[int] = mapped_column(
         ForeignKey("transactions.id", ondelete="CASCADE"), primary_key=True
     )
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("classification_batches.id", ondelete="SET NULL"), nullable=True)
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     project: Mapped[str | None] = mapped_column(String(200), nullable=True)
     cost_category: Mapped[str | None] = mapped_column(String(200), nullable=True)
     gl_account: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="unclassified")
+    status: Mapped[str] = mapped_column(String(50), default="unclassified")  # unclassified, predicted, user_confirmed, manager_approved, rejected
     last_updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str | None] = mapped_column(String(50), nullable=True)  # ml, user, manager
+    rejection_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # Manager rejection note
 
     transaction: Mapped["Transaction"] = relationship(back_populates="classification")
+    batch: Mapped["ClassificationBatch | None"] = relationship(back_populates="classifications")
 
 
 class FinanceExtension(Base):

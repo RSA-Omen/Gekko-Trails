@@ -18,6 +18,7 @@ async def list_transactions(
     bank_account: Optional[str] = Query(default=None, description="Filter by Bank Account"),
     cardholder_id: Optional[int] = Query(default=None, description="Filter by Cardholder ID (for cardholder/manager views)"),
     manager_id: Optional[int] = Query(default=None, description="Filter by Manager ID (shows transactions for manager's cardholders)"),
+    account_last4: Optional[str] = Query(default=None, description="Optional filter: only transactions for a specific card (last 4 digits)"),
     limit: int = Query(default=100, ge=1, le=1000),
     x_mock_role: Optional[str] = Header(default=None, alias="X-Mock-Role", description="Mock role for testing (admin/finance/cardholder/manager)"),
 ) -> dict:
@@ -105,6 +106,11 @@ async def list_transactions(
 
         if bank_account:
             stmt = stmt.where(Transaction.bank_account == bank_account)
+
+        # Optional per-card filter for manager/cardholder views: match on last 4 digits.
+        if account_last4:
+            last4 = account_last4[-4:]
+            stmt = stmt.where(Transaction.bank_account.like(f"%{last4}"))
 
         stmt = stmt.limit(limit)
         rows = session.execute(stmt).all()

@@ -28,6 +28,30 @@ type AccountRow = {
   cardholder: { id: number; display_name: string } | null;
 };
 
+type ManagerRow = {
+  id: number;
+  user_id: number | null;
+  email: string | null;
+};
+
+type Format2Item = {
+  transaction_id: number;
+  date: string;
+  bank_account: string;
+  narrative: string;
+  amount: number | null;
+  debit_amount: number | null;
+  credit_amount: number | null;
+  balance: number | null;
+  description: string | null;
+  project: string | null;
+  cost_category: string | null;
+  gl_account: string | null;
+  status: string;
+  source: string | null;
+  batch_id: number | null;
+};
+
 export function AdminFinanceDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -36,7 +60,20 @@ export function AdminFinanceDashboard() {
   const [bankAccountFilter, setBankAccountFilter] = useState<string>("");
   const [ledger, setLedger] = useState<TransactionRow[]>([]);
   const [isLoadingLedger, setIsLoadingLedger] = useState(false);
-  const [activeTab, setActiveTab] = useState<"ledger" | "cards" | "cardholders">("ledger");
+  
+  // Ledger table filters and sorting
+  const [ledgerFilters, setLedgerFilters] = useState({
+    bankAccount: "",
+    narrative: "",
+    category: "",
+    dateFrom: "",
+    dateTo: "",
+  });
+  const [ledgerSort, setLedgerSort] = useState<{
+    column: keyof TransactionRow | null;
+    direction: "asc" | "desc";
+  }>({ column: null, direction: "asc" });
+  const [activeTab, setActiveTab] = useState<"ledger" | "cards" | "cardholders" | "managers" | "finance-inbox">("ledger");
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
   const [assigningAccountId, setAssigningAccountId] = useState<number | null>(null);
@@ -58,6 +95,34 @@ export function AdminFinanceDashboard() {
   const [isLoadingCardholders, setIsLoadingCardholders] = useState(false);
   const [editingCardholderId, setEditingCardholderId] = useState<number | null>(null);
   const [newCardholder, setNewCardholder] = useState({ name: "", surname: "", email: "" });
+  const [dialogManagerId, setDialogManagerId] = useState<number | "">("");
+
+  // Managers management state
+  const [managers, setManagers] = useState<ManagerRow[]>([]);
+  const [isLoadingManagers, setIsLoadingManagers] = useState(false);
+
+  // Finance Inbox state
+  type FinanceInboxItem = {
+    import_job_id: number;
+    file_name: string;
+    created_at: string;
+    transaction_count: number;
+    finance_batch_id: number | null;
+    status: string;
+    released_to_cardholders: boolean;
+  };
+  const [financeInbox, setFinanceInbox] = useState<FinanceInboxItem[]>([]);
+  const [isLoadingFinanceInbox, setIsLoadingFinanceInbox] = useState(false);
+  const [selectedImportJobId, setSelectedImportJobId] = useState<number | null>(null);
+  const [batchItems, setBatchItems] = useState<Format2Item[]>([]);
+  const [isLoadingBatchItems, setIsLoadingBatchItems] = useState(false);
+  const [showReleaseDialog, setShowReleaseDialog] = useState(false);
+  const [releasingBatchId, setReleasingBatchId] = useState<number | null>(null);
+  const [selectedCardholdersForRelease, setSelectedCardholdersForRelease] = useState<Set<number>>(new Set());
+  const [isReleasing, setIsReleasing] = useState(false);
+  const [cardholdersWithTransactions, setCardholdersWithTransactions] = useState<Set<number>>(new Set());
+  const [alreadyReleasedCardholders, setAlreadyReleasedCardholders] = useState<Set<number>>(new Set());
+  const [isLoadingCardholdersWithTransactions, setIsLoadingCardholdersWithTransactions] = useState(false);
   
   // Cardholder table filters and sorting
   const [cardholderFilters, setCardholderFilters] = useState({
@@ -152,6 +217,14 @@ export function AdminFinanceDashboard() {
       }
     } else if (activeTab === "cardholders") {
       void loadCardholders();
+      // Managers are used when editing cardholders
+      if (managers.length === 0 && !isLoadingManagers) {
+        void loadManagers();
+      }
+    } else if (activeTab === "managers") {
+      void loadManagers();
+    } else if (activeTab === "finance-inbox") {
+      void loadFinanceInbox();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -177,11 +250,229 @@ export function AdminFinanceDashboard() {
     }
   }
 
+  async function loadManagers() {
+    setIsLoadingManagers(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/managers");
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      const data = (await response.json()) as ManagerRow[];
+      setManagers(data);
+    } catch (e) {
+      const err = e as Error;
+      setError(err.message || "Failed to load managers.");
+      setManagers([]);
+    } finally {
+      setIsLoadingManagers(false);
+    }
+  }
+
+  async function loadFinanceInbox() {
+    setIsLoadingFinanceInbox(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/finance/inbox");
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      const data = (await response.json()) as { items: FinanceInboxItem[] };
+      setFinanceInbox(data.items);
+    } catch (e) {
+      const err = e as Error;
+      setError(err.message || "Failed to load finance inbox.");
+      setFinanceInbox([]);
+    } finally {
+      setIsLoadingFinanceInbox(false);
+    }
+  }
+
+  async function openFinanceBatch(importJobId: number) {
+    setError(null);
+    try {
+      console.log(`Opening finance batch for import job ${importJobId}...`);
+      const response = await fetch(`/api/finance/batches/${importJobId}/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner_type: "finance",
+          owner_id: null,
+        }),
+      });
+      console.log(`Open batch response status: ${response.status} ${response.statusText}`);
+      
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        console.error("Error response body:", body);
+        const detail = body?.detail ?? response.statusText;
+        const errorMsg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        console.error("Error message:", errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      const batchData = await response.json();
+      console.log("Batch opened successfully:", batchData);
+      
+      await loadFinanceInbox();
+      setSelectedImportJobId(importJobId);
+      await loadBatchItems(importJobId);
+    } catch (e) {
+      const err = e as Error;
+      console.error("Error opening finance batch:", err);
+      setError(err.message || "Failed to open finance batch.");
+    }
+  }
+
+  async function completeFinanceBatch(batchId: number) {
+    setError(null);
+    try {
+      const response = await fetch(`/api/finance/batches/${batchId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      // Reload inbox to update status, but keep the review screen open
+      await loadFinanceInbox();
+      // Don't navigate away - user can now click "Release to Cardholders"
+    } catch (e) {
+      const err = e as Error;
+      setError(err.message || "Failed to complete finance batch.");
+    }
+  }
+
+  async function loadBatchItems(importJobId: number) {
+    setIsLoadingBatchItems(true);
+    setError(null);
+    try {
+      console.log(`Loading batch items for import job ${importJobId}...`);
+      const response = await fetch(`/api/classifications/finance/batch/${importJobId}`);
+      console.log(`Response status: ${response.status} ${response.statusText}`);
+      
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        console.error("Error response body:", body);
+        const detail = body?.detail ?? response.statusText;
+        const errorMsg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        console.error("Error message:", errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      const data = (await response.json()) as { items: Format2Item[] };
+      console.log(`Loaded ${data.items.length} batch items`);
+      setBatchItems(data.items);
+    } catch (e) {
+      const err = e as Error;
+      console.error("Error loading batch items:", err);
+      const errorMsg = err.message || "Failed to load batch items.";
+      setError(errorMsg);
+      setBatchItems([]);
+    } finally {
+      setIsLoadingBatchItems(false);
+    }
+  }
+
+  async function loadCardholdersWithTransactions(batchId: number) {
+    setIsLoadingCardholdersWithTransactions(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/finance/batches/${batchId}/cardholders-with-transactions`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      const data = (await response.json()) as { cardholder_ids: number[]; already_released_ids?: number[] };
+      setCardholdersWithTransactions(new Set(data.cardholder_ids));
+      setAlreadyReleasedCardholders(new Set(data.already_released_ids || []));
+    } catch (e) {
+      const err = e as Error;
+      console.error("Error loading cardholders with transactions:", err);
+      setError(err.message || "Failed to load cardholders with transactions.");
+      setCardholdersWithTransactions(new Set());
+      setAlreadyReleasedCardholders(new Set());
+    } finally {
+      setIsLoadingCardholdersWithTransactions(false);
+    }
+  }
+
+  async function releaseBatchToCardholders(batchId: number, cardholderIds: number[]) {
+    setIsReleasing(true);
+    setError(null);
+    const results: Array<{ cardholderId: number; success: boolean; message: string }> = [];
+    
+    for (const cardholderId of cardholderIds) {
+      try {
+        const response = await fetch(`/api/cardholders/${cardholderId}/batches/from-finance`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            owner_type: "cardholder",
+            parent_batch_id: batchId,
+            title: `Cardholder ${cardholderId} - Classification`,
+            label: `Batch ${batchId}`,
+          }),
+        });
+        
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          const detail = body?.detail ?? response.statusText;
+          results.push({
+            cardholderId,
+            success: false,
+            message: typeof detail === "string" ? detail : JSON.stringify(detail),
+          });
+        } else {
+          const data = await response.json();
+          results.push({
+            cardholderId,
+            success: true,
+            message: `Batch with ${data.transaction_count} transactions`,
+          });
+        }
+      } catch (e) {
+        const err = e as Error;
+        results.push({
+          cardholderId,
+          success: false,
+          message: err.message || "Failed to create batch",
+        });
+      }
+    }
+    
+    setIsReleasing(false);
+    
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+    
+    if (failCount === 0) {
+      alert(`Successfully released batch to ${successCount} cardholder(s).`);
+      // Reload the list to update "already released" status
+      if (releasingBatchId) {
+        await loadCardholdersWithTransactions(releasingBatchId);
+      }
+      setSelectedCardholdersForRelease(new Set());
+      // Don't close dialog - user can release to more cardholders if needed
+    } else {
+      const errorDetails = results.filter(r => !r.success).map(r => `Cardholder ${r.cardholderId}: ${r.message}`).join("\n");
+      setError(`Released to ${successCount} cardholder(s), failed for ${failCount}:\n${errorDetails}`);
+    }
+  }
+
   async function handleAssignCardholder(accountId: number) {
     const cardholderId = selectedCardholderIds[accountId];
     const name = (assignNames[accountId] ?? "").trim();
     
-    if (!cardholderId && !name) {
+    if ((cardholderId === undefined || cardholderId === "") && !name) {
       setError("Please select a cardholder or enter a name before assigning.");
       return;
     }
@@ -190,7 +481,7 @@ export function AdminFinanceDashboard() {
     setError(null);
     try {
       const payload: { cardholder_id?: number; display_name?: string } = {};
-      if (cardholderId && cardholderId !== "") {
+      if (cardholderId !== undefined && cardholderId !== "") {
         payload.cardholder_id = cardholderId as number;
       } else if (name) {
         payload.display_name = name;
@@ -331,6 +622,7 @@ export function AdminFinanceDashboard() {
         name: nameTrimmed,
         surname: surnameTrimmed,
         email: emailTrimmed,
+        manager_id: dialogManagerId === "" ? null : dialogManagerId,
       };
       
       console.log("API Request Details:", {
@@ -420,6 +712,7 @@ export function AdminFinanceDashboard() {
       console.log("Closing dialog and resetting state");
       setShowCardholderDialog(false);
       setDialogCardholder({ name: "", surname: "", email: "" });
+      setDialogManagerId("");
       setEditingCardholderId(null);
       setError(null);
       
@@ -469,11 +762,67 @@ export function AdminFinanceDashboard() {
     // Apply sorting
     if (cardholderSort.column) {
       filtered.sort((a, b) => {
-        const aVal = a[cardholderSort.column!];
-        const bVal = b[cardholderSort.column!];
+        const column = cardholderSort.column!;
+        const aVal = a[column] as string | number | null;
+        const bVal = b[column] as string | number | null;
         if (aVal === bVal) return 0;
-        const comparison = aVal < bVal ? -1 : 1;
+        const aSafe = aVal ?? "";
+        const bSafe = bVal ?? "";
+        const comparison = aSafe < bSafe ? -1 : 1;
         return cardholderSort.direction === "asc" ? comparison : -comparison;
+      });
+    }
+
+    return filtered;
+  }
+
+  function getFilteredAndSortedLedger(): TransactionRow[] {
+    let filtered = [...ledger];
+
+    // Apply filters
+    if (ledgerFilters.bankAccount.trim()) {
+      filtered = filtered.filter((tx) =>
+        tx.bank_account.toLowerCase().includes(ledgerFilters.bankAccount.toLowerCase())
+      );
+    }
+    if (ledgerFilters.narrative.trim()) {
+      filtered = filtered.filter((tx) =>
+        (tx.narrative || "").toLowerCase().includes(ledgerFilters.narrative.toLowerCase())
+      );
+    }
+    if (ledgerFilters.category.trim()) {
+      filtered = filtered.filter((tx) =>
+        (tx.raw_categories || "").toLowerCase().includes(ledgerFilters.category.toLowerCase())
+      );
+    }
+    if (ledgerFilters.dateFrom.trim()) {
+      filtered = filtered.filter((tx) => tx.date >= ledgerFilters.dateFrom);
+    }
+    if (ledgerFilters.dateTo.trim()) {
+      filtered = filtered.filter((tx) => tx.date <= ledgerFilters.dateTo);
+    }
+
+    // Apply sorting
+    if (ledgerSort.column) {
+      filtered.sort((a, b) => {
+        const column = ledgerSort.column!;
+        let aVal: string | number | null = a[column] as string | number | null;
+        let bVal: string | number | null = b[column] as string | number | null;
+
+        // Handle numeric columns
+        if (column === "debit_amount" || column === "credit_amount" || column === "balance") {
+          aVal = aVal ?? 0;
+          bVal = bVal ?? 0;
+          const comparison = (aVal as number) < (bVal as number) ? -1 : 1;
+          return ledgerSort.direction === "asc" ? comparison : -comparison;
+        }
+
+        // Handle string columns
+        if (aVal === bVal) return 0;
+        const aSafe = (aVal ?? "").toString();
+        const bSafe = (bVal ?? "").toString();
+        const comparison = aSafe < bSafe ? -1 : 1;
+        return ledgerSort.direction === "asc" ? comparison : -comparison;
       });
     }
 
@@ -563,6 +912,46 @@ export function AdminFinanceDashboard() {
         >
           Cardholders
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab("managers");
+            if (managers.length === 0 && !isLoadingManagers) {
+              void loadManagers();
+            }
+          }}
+          style={{
+            padding: "0.35rem 0.8rem",
+            borderRadius: "999px",
+            border: "1px solid",
+            borderColor: activeTab === "managers" ? "#6366f1" : "rgba(148,163,184,0.5)",
+            background: activeTab === "managers" ? "rgba(79,70,229,0.35)" : "transparent",
+            color: "#e5e7eb",
+            fontSize: "0.8rem",
+          }}
+        >
+          Managers
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab("finance-inbox");
+            if (financeInbox.length === 0 && !isLoadingFinanceInbox) {
+              void loadFinanceInbox();
+            }
+          }}
+          style={{
+            padding: "0.35rem 0.8rem",
+            borderRadius: "999px",
+            border: "1px solid",
+            borderColor: activeTab === "finance-inbox" ? "#6366f1" : "rgba(148,163,184,0.5)",
+            background: activeTab === "finance-inbox" ? "rgba(79,70,229,0.35)" : "transparent",
+            color: "#e5e7eb",
+            fontSize: "0.8rem",
+          }}
+        >
+          Finance Inbox
+        </button>
       </div>
 
       {activeTab === "ledger" && (
@@ -605,10 +994,8 @@ export function AdminFinanceDashboard() {
                   // Clear the ledger view
                   setLedger([]);
                   setResult(null);
-                  // Reload accounts to refresh the view
-                  if (activeTab === "cards") {
-                    void loadAccounts();
-                  }
+                  // Reload accounts to refresh the view if needed
+                  void loadAccounts();
                 } catch (e) {
                   const err = e as Error;
                   setError(err.message || "Failed to clear ledger");
@@ -651,6 +1038,66 @@ export function AdminFinanceDashboard() {
           <hr style={{ margin: "1.5rem 0", borderColor: "rgba(148,163,184,0.3)" }} />
 
           <h2 style={{ fontSize: "1.05rem", marginTop: 0 }}>Ledger (Format 1)</h2>
+          
+          {/* Filters */}
+          <div style={{ marginBottom: "0.75rem", padding: "0.5rem", background: "rgba(15,23,42,0.3)", borderRadius: "0.5rem", display: "flex", gap: "0.4rem", flexWrap: "nowrap", alignItems: "center" }}>
+            <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+              Account:
+              <input
+                type="text"
+                value={ledgerFilters.bankAccount}
+                onChange={(e) => setLedgerFilters((prev) => ({ ...prev, bankAccount: e.target.value }))}
+                placeholder="Account..."
+                style={{ padding: "0.25rem 0.4rem", width: "100px", fontSize: "0.75rem" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+              Narrative:
+              <input
+                type="text"
+                value={ledgerFilters.narrative}
+                onChange={(e) => setLedgerFilters((prev) => ({ ...prev, narrative: e.target.value }))}
+                placeholder="Narrative..."
+                style={{ padding: "0.25rem 0.4rem", width: "120px", fontSize: "0.75rem" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+              Category:
+              <input
+                type="text"
+                value={ledgerFilters.category}
+                onChange={(e) => setLedgerFilters((prev) => ({ ...prev, category: e.target.value }))}
+                placeholder="Category..."
+                style={{ padding: "0.25rem 0.4rem", width: "100px", fontSize: "0.75rem" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+              From:
+              <input
+                type="date"
+                value={ledgerFilters.dateFrom}
+                onChange={(e) => setLedgerFilters((prev) => ({ ...prev, dateFrom: e.target.value }))}
+                style={{ padding: "0.25rem 0.4rem", fontSize: "0.75rem" }}
+              />
+            </label>
+            <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+              To:
+              <input
+                type="date"
+                value={ledgerFilters.dateTo}
+                onChange={(e) => setLedgerFilters((prev) => ({ ...prev, dateTo: e.target.value }))}
+                style={{ padding: "0.25rem 0.4rem", fontSize: "0.75rem" }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => setLedgerFilters({ bankAccount: "", narrative: "", category: "", dateFrom: "", dateTo: "" })}
+              style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem", whiteSpace: "nowrap" }}
+            >
+              Clear
+            </button>
+          </div>
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -659,7 +1106,7 @@ export function AdminFinanceDashboard() {
             style={{ marginBottom: "0.75rem", display: "flex", gap: "0.5rem", alignItems: "center" }}
           >
             <label style={{ fontSize: "0.85rem" }}>
-              Bank Account:
+              Bank Account (API Filter):
               <input
                 type="text"
                 value={bankAccountFilter}
@@ -669,32 +1116,104 @@ export function AdminFinanceDashboard() {
               />
             </label>
             <button type="submit" disabled={isLoadingLedger} style={{ paddingInline: "0.8rem" }}>
-              {isLoadingLedger ? "Loading..." : "Refresh"}
+              {isLoadingLedger ? "Loading..." : "Refresh from Server"}
             </button>
           </form>
 
           <div style={{ maxHeight: "320px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
-              <thead style={{ background: "rgba(15,23,42,0.9)" }}>
+              <thead style={{ background: "rgba(15,23,42,0.9)", position: "sticky", top: 0 }}>
                 <tr>
-                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Date</th>
-                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Bank Account</th>
-                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Narrative</th>
-                  <th style={{ textAlign: "right", padding: "0.4rem 0.6rem" }}>Debit</th>
-                  <th style={{ textAlign: "right", padding: "0.4rem 0.6rem" }}>Credit</th>
-                  <th style={{ textAlign: "right", padding: "0.4rem 0.6rem" }}>Balance</th>
-                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Category</th>
+                  <th
+                    style={{ textAlign: "left", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "date",
+                        direction: prev.column === "date" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Date {ledgerSort.column === "date" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "left", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "bank_account",
+                        direction: prev.column === "bank_account" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Bank Account {ledgerSort.column === "bank_account" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "left", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "narrative",
+                        direction: prev.column === "narrative" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Narrative {ledgerSort.column === "narrative" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "right", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "debit_amount",
+                        direction: prev.column === "debit_amount" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Debit {ledgerSort.column === "debit_amount" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "right", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "credit_amount",
+                        direction: prev.column === "credit_amount" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Credit {ledgerSort.column === "credit_amount" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "right", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "balance",
+                        direction: prev.column === "balance" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Balance {ledgerSort.column === "balance" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
+                  <th
+                    style={{ textAlign: "left", padding: "0.4rem 0.6rem", cursor: "pointer", userSelect: "none" }}
+                    onClick={() => {
+                      setLedgerSort((prev) => ({
+                        column: "raw_categories",
+                        direction: prev.column === "raw_categories" && prev.direction === "asc" ? "desc" : "asc",
+                      }));
+                    }}
+                  >
+                    Category {ledgerSort.column === "raw_categories" && (ledgerSort.direction === "asc" ? "↑" : "↓")}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {ledger.length === 0 ? (
+                {getFilteredAndSortedLedger().length === 0 ? (
                   <tr>
                     <td colSpan={7} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
-                      No transactions found for the current filter.
+                      {ledger.length === 0
+                        ? "No transactions found. Upload a CSV to populate the ledger."
+                        : "No transactions match the current filters."}
                     </td>
                   </tr>
                 ) : (
-                  ledger.map((tx) => (
+                  getFilteredAndSortedLedger().map((tx) => (
                     <tr key={tx.id}>
                       <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{tx.date}</td>
                       <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{tx.bank_account}</td>
@@ -940,6 +1459,7 @@ export function AdminFinanceDashboard() {
               onClick={() => {
                 setDialogMode("create");
                 setDialogCardholder({ name: "", surname: "", email: "" });
+                setDialogManagerId("");
                 setShowCardholderDialog(true);
               }}
               style={{ paddingInline: "0.8rem", background: "#6366f1", color: "#fff" }}
@@ -1084,6 +1604,7 @@ export function AdminFinanceDashboard() {
                             onClick={() => {
                               setDialogMode("edit");
                               setDialogCardholder({ name: ch.name, surname: ch.surname, email: ch.email });
+                              setDialogManagerId(ch.manager?.id ?? "");
                               setEditingCardholderId(ch.id);
                               setShowCardholderDialog(true);
                             }}
@@ -1210,6 +1731,32 @@ export function AdminFinanceDashboard() {
                         style={{ width: "100%", marginTop: "0.25rem", padding: "0.5rem", background: "#0f172a", border: "1px solid rgba(148,163,184,0.3)", borderRadius: "0.25rem", color: "#e5e7eb" }}
                       />
                     </label>
+                    <label style={{ fontSize: "0.9rem" }}>
+                      Manager:
+                      <select
+                        value={dialogManagerId === "" ? "" : dialogManagerId}
+                        onChange={(e) => {
+                          const value = e.target.value === "" ? "" : parseInt(e.target.value, 10);
+                          setDialogManagerId(value);
+                        }}
+                        style={{
+                          width: "100%",
+                          marginTop: "0.25rem",
+                          padding: "0.5rem",
+                          background: "#0f172a",
+                          border: "1px solid rgba(148,163,184,0.3)",
+                          borderRadius: "0.25rem",
+                          color: "#e5e7eb",
+                        }}
+                      >
+                        <option value="">No manager</option>
+                        {managers.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.email ? `${m.email} (ID: ${m.id})` : `Manager ID: ${m.id}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   </div>
                   <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
                     <button
@@ -1217,6 +1764,7 @@ export function AdminFinanceDashboard() {
                       onClick={() => {
                         setShowCardholderDialog(false);
                         setDialogCardholder({ name: "", surname: "", email: "" });
+                        setDialogManagerId("");
                         setEditingCardholderId(null);
                         setError(null);
                       }}
@@ -1242,6 +1790,470 @@ export function AdminFinanceDashboard() {
             </div>
           )}
         </>
+      )}
+      {activeTab === "managers" && (
+        <>
+          {error && activeTab === "managers" && (
+            <p style={{ color: "#fecaca", marginTop: 0 }}>
+              {error}
+            </p>
+          )}
+
+          <p>
+            View managers imported from historic data. Managers can be assigned to cardholders
+            in the Cardholders tab by editing a cardholder and selecting a manager.
+          </p>
+
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={isLoadingManagers}
+              onClick={() => void loadManagers()}
+              style={{ paddingInline: "0.8rem" }}
+            >
+              {isLoadingManagers ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+
+          <div style={{ maxHeight: "320px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+              <thead style={{ background: "rgba(15,23,42,0.9)" }}>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>ID</th>
+                  <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Email</th>
+                </tr>
+              </thead>
+              <tbody>
+                {managers.length === 0 ? (
+                  <tr>
+                    <td colSpan={2} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
+                      {isLoadingManagers ? "Loading managers..." : "No managers found."}
+                    </td>
+                  </tr>
+                ) : (
+                  managers.map((m) => (
+                    <tr key={m.id}>
+                      <td style={{ padding: "0.4rem 0.6rem", fontWeight: "bold", color: "#a5b4fc" }}>{m.id}</td>
+                      <td style={{ padding: "0.4rem 0.6rem" }}>{m.email || "(email unknown)"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {activeTab === "finance-inbox" && (
+        <>
+          {error && activeTab === "finance-inbox" && (
+            <p style={{ color: "#fecaca", marginTop: 0 }}>
+              {error}
+            </p>
+          )}
+
+          <p>
+            Review imported CSV files and mark batches as ready for cardholders to classify.
+          </p>
+
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={isLoadingFinanceInbox}
+              onClick={() => void loadFinanceInbox()}
+              style={{ paddingInline: "0.8rem" }}
+            >
+              {isLoadingFinanceInbox ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+
+          {selectedImportJobId === null ? (
+            <div style={{ maxHeight: "400px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                <thead style={{ background: "rgba(15,23,42,0.9)", position: "sticky", top: 0 }}>
+                  <tr>
+                    <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Import Job ID</th>
+                    <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>File Name</th>
+                    <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Created</th>
+                    <th style={{ textAlign: "right", padding: "0.4rem 0.6rem" }}>Transactions</th>
+                    <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Status</th>
+                    <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {financeInbox.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
+                        {isLoadingFinanceInbox ? "Loading inbox..." : "No imports found."}
+                      </td>
+                    </tr>
+                  ) : (
+                    financeInbox.map((item) => (
+                      <tr key={item.import_job_id}>
+                        <td style={{ padding: "0.4rem 0.6rem", fontWeight: "bold", color: "#a5b4fc" }}>{item.import_job_id}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{item.file_name}</td>
+                        <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{new Date(item.created_at).toLocaleDateString()}</td>
+                        <td style={{ padding: "0.4rem 0.6rem", textAlign: "right" }}>{item.transaction_count}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>
+                          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                            <span style={{
+                              padding: "0.2rem 0.5rem",
+                              borderRadius: "0.25rem",
+                              fontSize: "0.75rem",
+                              background: item.status === "completed" ? "rgba(16, 185, 129, 0.2)" : item.status === "open" ? "rgba(99, 102, 241, 0.2)" : "rgba(148, 163, 184, 0.2)",
+                              color: item.status === "completed" ? "#86efac" : item.status === "open" ? "#a5b4fc" : "#cbd5e1",
+                            }}>
+                              {item.status}
+                            </span>
+                            {item.status === "completed" && item.released_to_cardholders && (
+                              <span style={{
+                                padding: "0.2rem 0.5rem",
+                                borderRadius: "0.25rem",
+                                fontSize: "0.75rem",
+                                background: "rgba(139, 92, 246, 0.2)",
+                                color: "#c4b5fd",
+                              }}>
+                                Released
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedImportJobId(item.import_job_id);
+                              if (!item.finance_batch_id) {
+                                void openFinanceBatch(item.import_job_id);
+                              } else {
+                                void loadBatchItems(item.import_job_id);
+                              }
+                            }}
+                            style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem", background: "#6366f1", color: "#fff", border: "none", borderRadius: "0.25rem", cursor: "pointer" }}
+                          >
+                            Review
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedImportJobId(null);
+                    setBatchItems([]);
+                  }}
+                  style={{ paddingInline: "0.8rem" }}
+                >
+                  ← Back to Inbox
+                </button>
+                {financeInbox.find(item => item.import_job_id === selectedImportJobId)?.finance_batch_id && (
+                  <>
+                    {financeInbox.find(item => item.import_job_id === selectedImportJobId)?.status === "open" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const item = financeInbox.find(item => item.import_job_id === selectedImportJobId);
+                          if (item?.finance_batch_id) {
+                            void completeFinanceBatch(item.finance_batch_id);
+                          }
+                        }}
+                        style={{ paddingInline: "0.8rem", background: "#10b981", color: "#fff" }}
+                      >
+                        Mark as Complete
+                      </button>
+                    )}
+                    {financeInbox.find(item => item.import_job_id === selectedImportJobId)?.status === "completed" && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const item = financeInbox.find(item => item.import_job_id === selectedImportJobId);
+                          if (item?.finance_batch_id) {
+                            setReleasingBatchId(item.finance_batch_id);
+                            setShowReleaseDialog(true);
+                            // Load cardholders if not already loaded
+                            if (cardholders.length === 0) {
+                              await loadCardholders();
+                            }
+                            // Load cardholders with transactions for this batch
+                            await loadCardholdersWithTransactions(item.finance_batch_id);
+                          }
+                        }}
+                        style={{ paddingInline: "0.8rem", background: "#6366f1", color: "#fff" }}
+                      >
+                        Release to Cardholders
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <h3 style={{ fontSize: "1rem", marginTop: 0 }}>
+                Batch Review - Import Job {selectedImportJobId}
+              </h3>
+
+              {isLoadingBatchItems ? (
+                <p>Loading batch items...</p>
+              ) : (
+                <div style={{ maxHeight: "400px", overflow: "auto", borderRadius: "0.75rem", border: "1px solid rgba(148,163,184,0.35)" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                    <thead style={{ background: "rgba(15,23,42,0.9)", position: "sticky", top: 0 }}>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Date</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Bank Account</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Narrative</th>
+                        <th style={{ textAlign: "right", padding: "0.4rem 0.6rem" }}>Amount</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Description</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Project</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Cost Category</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>GL Account</th>
+                        <th style={{ textAlign: "left", padding: "0.4rem 0.6rem" }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} style={{ padding: "0.6rem", textAlign: "center", opacity: 0.7 }}>
+                            No transactions in this batch.
+                          </td>
+                        </tr>
+                      ) : (
+                        batchItems.map((item) => (
+                          <tr key={item.transaction_id}>
+                            <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{item.date}</td>
+                            <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{item.bank_account}</td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>{item.narrative}</td>
+                            <td style={{ padding: "0.4rem 0.6rem", textAlign: "right" }}>
+                              {item.amount != null ? item.amount.toFixed(2) : ""}
+                            </td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>{item.description || ""}</td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>{item.project || ""}</td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>{item.cost_category || ""}</td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>{item.gl_account || ""}</td>
+                            <td style={{ padding: "0.4rem 0.6rem" }}>
+                              <span style={{
+                                padding: "0.15rem 0.4rem",
+                                borderRadius: "0.25rem",
+                                fontSize: "0.7rem",
+                                background: item.status === "unclassified" ? "rgba(148, 163, 184, 0.2)" : "rgba(16, 185, 129, 0.2)",
+                                color: item.status === "unclassified" ? "#cbd5e1" : "#86efac",
+                              }}>
+                                {item.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Release to Cardholders Dialog */}
+      {showReleaseDialog && releasingBatchId && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowReleaseDialog(false);
+              setSelectedCardholdersForRelease(new Set());
+              setReleasingBatchId(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#1e293b",
+              padding: "1.5rem",
+              borderRadius: "0.75rem",
+              minWidth: "500px",
+              maxWidth: "90vw",
+              maxHeight: "80vh",
+              overflow: "auto",
+              border: "1px solid rgba(148,163,184,0.3)",
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setShowReleaseDialog(false);
+                  setSelectedCardholdersForRelease(new Set());
+                  setReleasingBatchId(null);
+                  setCardholdersWithTransactions(new Set());
+                  setAlreadyReleasedCardholders(new Set());
+                }
+              }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: "1rem" }}>
+              Release Batch to Cardholders
+            </h2>
+            <p style={{ fontSize: "0.85rem", opacity: 0.8, marginBottom: "1rem" }}>
+              Select cardholders to create batches for. Only cardholders with transactions in this batch are shown.
+            </p>
+            
+            {isLoadingCardholdersWithTransactions ? (
+              <p style={{ opacity: 0.7, textAlign: "center", marginBottom: "1rem" }}>Loading cardholders with transactions...</p>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const eligibleIds = cardholders
+                        .filter(ch => cardholdersWithTransactions.has(ch.id))
+                        .map(ch => ch.id);
+                      setSelectedCardholdersForRelease(new Set(eligibleIds));
+                    }}
+                    style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem", background: "#6366f1", color: "#fff", border: "none", borderRadius: "0.25rem", cursor: "pointer" }}
+                  >
+                    Select All ({cardholdersWithTransactions.size - alreadyReleasedCardholders.size})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCardholdersForRelease(new Set());
+                    }}
+                    style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem", background: "transparent", border: "1px solid rgba(148,163,184,0.5)", borderRadius: "0.25rem", color: "#e5e7eb", cursor: "pointer" }}
+                  >
+                    Clear All
+                  </button>
+                </div>
+                {cardholdersWithTransactions.size === 0 && (
+                  <p style={{ color: "#fecaca", marginBottom: "1rem", fontSize: "0.85rem" }}>
+                    No cardholders have transactions in this batch. All cardholders need assigned accounts that match transactions in the import.
+                  </p>
+                )}
+              </>
+            )}
+            
+            {error && (
+              <p style={{ color: "#fecaca", marginBottom: "1rem", fontSize: "0.9rem", whiteSpace: "pre-wrap" }}>
+                {error}
+              </p>
+            )}
+
+            <div style={{ marginBottom: "1rem", maxHeight: "300px", overflow: "auto", border: "1px solid rgba(148,163,184,0.3)", borderRadius: "0.5rem", padding: "0.5rem" }}>
+              {cardholders.length === 0 ? (
+                <p style={{ opacity: 0.7, textAlign: "center" }}>Loading cardholders...</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  {cardholders
+                    .filter(ch => cardholdersWithTransactions.has(ch.id))
+                    .map((ch) => {
+                      const alreadyReleased = alreadyReleasedCardholders.has(ch.id);
+                      return (
+                    <label
+                      key={ch.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.5rem",
+                        padding: "0.5rem",
+                        cursor: alreadyReleased ? "default" : "pointer",
+                        borderRadius: "0.25rem",
+                        background: selectedCardholdersForRelease.has(ch.id) ? "rgba(99, 102, 241, 0.2)" : alreadyReleased ? "rgba(139, 92, 246, 0.1)" : "transparent",
+                        opacity: alreadyReleased ? 0.7 : 1,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedCardholdersForRelease.has(ch.id)}
+                        disabled={alreadyReleased}
+                        onChange={(e) => {
+                          if (alreadyReleased) return;
+                          const newSet = new Set(selectedCardholdersForRelease);
+                          if (e.target.checked) {
+                            newSet.add(ch.id);
+                          } else {
+                            newSet.delete(ch.id);
+                          }
+                          setSelectedCardholdersForRelease(newSet);
+                        }}
+                      />
+                      <span>
+                        {ch.display_name} (ID: {ch.id})
+                        {alreadyReleased && (
+                          <span style={{ fontSize: "0.75rem", color: "#c4b5fd", marginLeft: "0.5rem", fontStyle: "italic" }}>
+                            (Already released)
+                          </span>
+                        )}
+                        {ch.manager && !alreadyReleased && (
+                          <span style={{ fontSize: "0.75rem", opacity: 0.7, marginLeft: "0.5rem" }}>
+                            - Manager: {ch.manager.email || `ID ${ch.manager.id}`}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                    })}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowReleaseDialog(false);
+                  setSelectedCardholdersForRelease(new Set());
+                  setReleasingBatchId(null);
+                  setCardholdersWithTransactions(new Set());
+                  setAlreadyReleasedCardholders(new Set());
+                  setError(null);
+                }}
+                disabled={isReleasing}
+                style={{ padding: "0.5rem 1rem", background: "transparent", border: "1px solid rgba(148,163,184,0.5)", borderRadius: "0.25rem", color: "#e5e7eb", cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedCardholdersForRelease.size === 0) {
+                    setError("Please select at least one cardholder.");
+                    return;
+                  }
+                  if (releasingBatchId) {
+                    void releaseBatchToCardholders(releasingBatchId, Array.from(selectedCardholdersForRelease));
+                  }
+                }}
+                disabled={isReleasing || selectedCardholdersForRelease.size === 0}
+                style={{
+                  padding: "0.5rem 1rem",
+                  background: isReleasing || selectedCardholdersForRelease.size === 0 ? "rgba(99, 102, 241, 0.5)" : "#6366f1",
+                  border: "none",
+                  borderRadius: "0.25rem",
+                  color: "#fff",
+                  cursor: isReleasing || selectedCardholdersForRelease.size === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                {isReleasing ? "Releasing..." : `Release to ${selectedCardholdersForRelease.size} Cardholder(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
     </>
